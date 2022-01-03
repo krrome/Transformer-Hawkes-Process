@@ -149,7 +149,7 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
               .format(ll=valid_event, type=valid_type, rmse=valid_time, elapse=(time.time() - start) / 60))
         if valid_event > best_event_ll:
             best_event_ll = valid_event
-            torch.save(model, "model.pt")
+            torch.save(model, f"{epoch}/model.pt")
             print("--(Best model save)---")
 
         valid_event_losses += [valid_event]
