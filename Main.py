@@ -184,13 +184,11 @@ def main():
     parser.add_argument('-dropout', type=float, default=0.1)
     parser.add_argument('-lr', type=float, default=1e-4)
     parser.add_argument('-smooth', type=float, default=0.1)
+    parser.add_argument('-device', type=float, default='cuda')
 
     parser.add_argument('-log', type=str, default='log.txt')
 
     opt = parser.parse_args()
-
-    # default device is CUDA
-    opt.device = torch.device('cuda')
 
     # setup the log file
     with open(opt.log, 'w') as f:
@@ -212,6 +210,7 @@ def main():
         d_k=opt.d_k,
         d_v=opt.d_v,
         dropout=opt.dropout,
+        device=opt.device
     )
     model.to(opt.device)
 
