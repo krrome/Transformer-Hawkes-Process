@@ -1,4 +1,5 @@
-data=data/data_so/fold1/
+data=/home/dev/data/AFV/sahp_data_afv/
+#data=/home/dev/data/AFV/sahp_data_stackoverflow/fold1/
 batch=4
 n_head=4
 n_layers=4

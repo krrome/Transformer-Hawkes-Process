@@ -63,7 +63,7 @@ class Encoder(nn.Module):
         Input: batch*seq_len.
         Output: batch*seq_len*d_model.
         """
-
+        # add a dimension at the end and devide every single timestamp by all "d_model" values of position_vec
         result = time.unsqueeze(-1) / self.position_vec
         result[:, :, 0::2] = torch.sin(result[:, :, 0::2])
         result[:, :, 1::2] = torch.cos(result[:, :, 1::2])
@@ -74,12 +74,16 @@ class Encoder(nn.Module):
 
         # prepare attention masks
         # slf_attn_mask is where we cannot look, i.e., the future and the padding
+        # generates (batch_size, seq_len, seq_len) masks where the increasing last dimension is stepwise next
+        # sample within one time series
         slf_attn_mask_subseq = get_subsequent_mask(event_type)
         slf_attn_mask_keypad = get_attn_key_pad_mask(seq_k=event_type, seq_q=event_type)
         slf_attn_mask_keypad = slf_attn_mask_keypad.type_as(slf_attn_mask_subseq)
         slf_attn_mask = (slf_attn_mask_keypad + slf_attn_mask_subseq).gt(0)
 
+        # (batch_size, seq_len, self.d_model)
         tem_enc = self.temporal_enc(event_time, non_pad_mask)
+        # (batch_size, seq_len, self.d_model)
         enc_output = self.event_emb(event_type)
 
         for enc_layer in self.layer_stack:
