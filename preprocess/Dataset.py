@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.utils.data
+import h5py
 
 from transformer import Constants
 
@@ -26,6 +27,25 @@ class EventData(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         """ Each returned element is a list, which represents an event stream """
         return self.time[idx], self.time_gap[idx], self.event_type[idx]
+
+
+class H5Dataset(torch.utils.data.Dataset):
+    def __init__(self, h5_path):
+        self.h5_path = h5_path
+        self._file = None
+
+    @property
+    def file(self) -> h5py.File:
+        if self._file is None:
+            self._file = h5py.File(self.h5_path, 'r')
+        return self._file
+
+    def __getitem__(self, index):
+        fh = self.file
+        return fh["timestamps"][index, :][:], fh["types"][index, :][:]
+
+    def __len__(self):
+        return len(self.file["timestamps"])
 
 
 def pad_time(insts):
@@ -59,7 +79,14 @@ def collate_fn(insts):
     time = pad_time(time)
     time_gap = pad_time(time_gap)
     event_type = pad_type(event_type)
-    return time, time_gap, event_type
+    return time, event_type
+
+
+def collate_fn_h5(arrays):
+    time, event_type = list(zip(*arrays))
+    time, event_type = torch.tensor(time, dtype=torch.float32), torch.tensor(event_type, dtype=torch.long)
+    sel = (time != 0).all(axis=0)
+    return time[:, sel], event_type[:, sel]
 
 
 def get_dataloader(data, batch_size, shuffle=True):
@@ -71,6 +98,20 @@ def get_dataloader(data, batch_size, shuffle=True):
         num_workers=2,
         batch_size=batch_size,
         collate_fn=collate_fn,
+        shuffle=shuffle
+    )
+    return dl
+
+
+def get_dataloader_h5(h5_path, batch_size, shuffle=True):
+    """ Prepare dataloader. """
+
+    ds = H5Dataset(h5_path)
+    dl = torch.utils.data.DataLoader(
+        ds,
+        num_workers=2,
+        batch_size=batch_size,
+        collate_fn=collate_fn_h5,
         shuffle=shuffle
     )
     return dl

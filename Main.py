@@ -9,7 +9,7 @@ import torch.optim as optim
 import transformer.Constants as Constants
 import Utils
 
-from preprocess.Dataset import get_dataloader
+from preprocess.Dataset import get_dataloader, get_dataloader_h5
 from transformer.Models import Transformer
 from tqdm import tqdm
 
@@ -36,6 +36,23 @@ def prepare_dataloader(opt):
     return trainloader, testloader, num_types
 
 
+def prepare_dataloader_h5(opt):
+    """ Load data and prepare dataloader. """
+    import h5py
+
+    train_path = opt.data + 'train.h5'
+    test_path = opt.data + 'test.h5'
+    dev_path = opt.data + 'dev.h5'
+
+    trainloader = get_dataloader_h5(train_path, opt.batch_size, shuffle=True)
+    testloader = get_dataloader_h5(test_path, opt.batch_size, shuffle=False)
+
+    with h5py.File(train_path, "r") as fh:
+        num_types = fh["num_types"][()]
+
+    return trainloader, testloader, num_types
+
+
 def train_epoch(model, training_data, optimizer, pred_loss_func, opt):
     """ Epoch operation in training phase. """
 
@@ -46,10 +63,13 @@ def train_epoch(model, training_data, optimizer, pred_loss_func, opt):
     total_event_rate = 0  # cumulative number of correct prediction
     total_num_event = 0  # number of total events
     total_num_pred = 0  # number of predictions
-    for batch in tqdm(training_data, mininterval=2,
-                      desc='  - (Training)   ', leave=False):
+    load_times = []
+    train_times = []
+    pre_load_time = time.time()
+    for batch in tqdm(training_data, mininterval=2, desc='  - (Training)   ', leave=False):
+        pre_train_time = time.time()
         """ prepare data """
-        event_time, time_gap, event_type = map(lambda x: x.to(opt.device), batch)
+        event_time, event_type = map(lambda x: x.to(opt.device), batch)
 
         """ forward """
         optimizer.zero_grad()
@@ -82,6 +102,12 @@ def train_epoch(model, training_data, optimizer, pred_loss_func, opt):
         total_num_event += event_type.ne(Constants.PAD).sum().item()
         # we do not predict the first event
         total_num_pred += event_type.ne(Constants.PAD).sum().item() - event_time.shape[0]
+        post_train_time = time.time()
+        load_times.append(pre_train_time - pre_load_time)
+        train_times.append(post_train_time - pre_train_time)
+        pre_load_time = time.time()
+
+    print(f"Avg load time: {sum(load_times) / len(load_times)}, avg train time: {sum(train_times) / len(train_times)}")
 
     rmse = np.sqrt(total_time_se / total_num_pred)
     return total_event_ll / total_num_event, total_event_rate / total_num_pred, rmse
@@ -101,7 +127,7 @@ def eval_epoch(model, validation_data, pred_loss_func, opt):
         for batch in tqdm(validation_data, mininterval=2,
                           desc='  - (Validation) ', leave=False):
             """ prepare data """
-            event_time, time_gap, event_type = map(lambda x: x.to(opt.device), batch)
+            event_time, event_type = map(lambda x: x.to(opt.device), batch)
 
             """ forward """
             enc_out, prediction = model(event_type, event_time)
@@ -149,8 +175,8 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
               .format(ll=valid_event, type=valid_type, rmse=valid_time, elapse=(time.time() - start) / 60))
         if valid_event > best_event_ll:
             best_event_ll = valid_event
-            torch.save(model, f"{epoch}/model.pt")
-            print("--(Best model save)---")
+            torch.save(model, f"best_model.pt")
+            print("--(Best model saved)---")
 
         valid_event_losses += [valid_event]
         valid_pred_losses += [valid_type]
@@ -165,6 +191,7 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
                     .format(epoch=epoch, ll=valid_event, acc=valid_type, rmse=valid_time))
 
         scheduler.step()
+    torch.save(model, f"final_model.pt")
 
 
 def main():
@@ -202,7 +229,7 @@ def main():
     print('[Info] parameters: {}'.format(opt))
 
     """ prepare dataloader """
-    trainloader, testloader, num_types = prepare_dataloader(opt)
+    trainloader, testloader, num_types = prepare_dataloader_h5(opt)
 
     """ prepare model """
     model = Transformer(
