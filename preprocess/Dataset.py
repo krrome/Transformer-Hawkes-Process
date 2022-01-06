@@ -84,7 +84,8 @@ def collate_fn(insts):
 
 def collate_fn_h5(arrays):
     time, event_type = list(zip(*arrays))
-    time, event_type = torch.tensor(time, dtype=torch.float32), torch.tensor(event_type, dtype=torch.long)
+    time = torch.tensor(np.array(time), dtype=torch.float32)
+    event_type = torch.tensor(np.array(event_type), dtype=torch.long)
     sel = (time != 0).all(axis=0)
     return time[:, sel], event_type[:, sel]
 

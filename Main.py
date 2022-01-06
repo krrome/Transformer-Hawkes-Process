@@ -1,5 +1,8 @@
 import argparse
+from datetime import datetime
+import json
 import numpy as np
+import os
 import pickle
 import time
 import torch
@@ -25,11 +28,11 @@ def prepare_dataloader(opt):
             return data, int(num_types)
 
     print('[Info] Loading train data...')
-    train_data, num_types = load_data(opt.data + 'train.pkl', 'train')
+    train_data, num_types = load_data(os.path.join(opt.data.rstrip("/"), 'train.pkl'), 'train')
     print('[Info] Loading dev data...')
-    dev_data, _ = load_data(opt.data + 'dev.pkl', 'dev')
+    dev_data, _ = load_data(os.path.join(opt.data.rstrip("/"), 'dev.pkl'), 'dev')
     print('[Info] Loading test data...')
-    test_data, _ = load_data(opt.data + 'test.pkl', 'test')
+    test_data, _ = load_data(os.path.join(opt.data.rstrip("/"), 'test.pkl'), 'test')
 
     trainloader = get_dataloader(train_data, opt.batch_size, shuffle=True)
     testloader = get_dataloader(test_data, opt.batch_size, shuffle=False)
@@ -40,15 +43,14 @@ def prepare_dataloader_h5(opt):
     """ Load data and prepare dataloader. """
     import h5py
 
-    train_path = opt.data + 'train.h5'
-    test_path = opt.data + 'test.h5'
-    dev_path = opt.data + 'dev.h5'
+    train_path = os.path.join(opt.data.rstrip("/"), 'train.h5')
+    test_path = os.path.join(opt.data.rstrip("/"), 'test.h5')
 
     trainloader = get_dataloader_h5(train_path, opt.batch_size, shuffle=True)
     testloader = get_dataloader_h5(test_path, opt.batch_size, shuffle=False)
 
     with h5py.File(train_path, "r") as fh:
-        num_types = fh["num_types"][()]
+        num_types = int(fh["num_types"][()])
 
     return trainloader, testloader, num_types
 
@@ -107,10 +109,12 @@ def train_epoch(model, training_data, optimizer, pred_loss_func, opt):
         train_times.append(post_train_time - pre_train_time)
         pre_load_time = time.time()
 
-    print(f"Avg load time: {sum(load_times) / len(load_times)}, avg train time: {sum(train_times) / len(train_times)}")
+    avg_load_time = sum(load_times) / len(load_times)
+    avg_train_time = sum(train_times) / len(train_times)
+    print(f"Avg load time: {avg_load_time}, avg train time: {avg_train_time}")
 
     rmse = np.sqrt(total_time_se / total_num_pred)
-    return total_event_ll / total_num_event, total_event_rate / total_num_pred, rmse
+    return total_event_ll / total_num_event, total_event_rate / total_num_pred, rmse, avg_load_time, avg_train_time
 
 
 def eval_epoch(model, validation_data, pred_loss_func, opt):
@@ -161,7 +165,8 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
         print('[ Epoch', epoch, ']')
 
         start = time.time()
-        train_event, train_type, train_time = train_epoch(model, training_data, optimizer, pred_loss_func, opt)
+        train_event, train_type, train_time, avg_load_time, avg_train_time = train_epoch(model, training_data,
+                                                                                         optimizer, pred_loss_func, opt)
         print('  - (Training)    loglikelihood: {ll: 8.5f}, '
               'accuracy: {type: 8.5f}, RMSE: {rmse: 8.5f}, '
               'elapse: {elapse:3.3f} min'
@@ -173,10 +178,12 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
               'accuracy: {type: 8.5f}, RMSE: {rmse: 8.5f}, '
               'elapse: {elapse:3.3f} min'
               .format(ll=valid_event, type=valid_type, rmse=valid_time, elapse=(time.time() - start) / 60))
+        model_saved = False
         if valid_event > best_event_ll:
             best_event_ll = valid_event
-            torch.save(model, f"best_model.pt")
+            torch.save(model, os.path.join(opt.log_path.rstrip("/"), "best_model.pt"))
             print("--(Best model saved)---")
+            model_saved = True
 
         valid_event_losses += [valid_event]
         valid_pred_losses += [valid_type]
@@ -186,9 +193,13 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
               .format(event=max(valid_event_losses), pred=max(valid_pred_losses), rmse=min(valid_rmse)))
 
         # logging
-        with open(opt.log, 'a') as f:
-            f.write('{epoch}, {ll: 8.5f}, {acc: 8.5f}, {rmse: 8.5f}\n'
-                    .format(epoch=epoch, ll=valid_event, acc=valid_type, rmse=valid_time))
+        with open(os.path.join(opt.log_path.rstrip("/"), 'log.txt'), 'a') as f:
+            summary_dict = {"epoch": epoch_i, "datetime": datetime.now().isoformat(),
+                            "avg_batch_load_time": avg_load_time, "avg_batch_train_time": avg_train_time,
+                            "model_saved": model_saved,
+                            "valid_ll": valid_event, "valid_acc_type": valid_type, "valid_rmse_time": valid_time,
+                            "train_ll": train_event, "train_acc_type": train_type, "train_rmse_time": train_time}
+            f.write(json.dumps(summary_dict) + '\n')
 
         scheduler.step()
     torch.save(model, f"final_model.pt")
@@ -218,13 +229,15 @@ def main():
     parser.add_argument('-smooth', type=float, default=0.1)
     parser.add_argument('-device', type=str, default='cuda')
 
-    parser.add_argument('-log', type=str, default='log.txt')
+    parser.add_argument('-log_path', type=str, default=os.getcwd())
 
     opt = parser.parse_args()
 
+    os.makedirs(opt.log_path, exist_ok=True)
+
     # setup the log file
-    with open(opt.log, 'w') as f:
-        f.write('Epoch, Log-likelihood, Accuracy, RMSE\n')
+    with open(os.path.join(opt.log_path.rstrip("/"), 'log.txt'), 'w') as f:
+        f.write(json.dumps(opt.__dict__) + '\n')
 
     print('[Info] parameters: {}'.format(opt))
 
