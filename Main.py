@@ -8,6 +8,8 @@ import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils import tensorboard
+import socket
 
 import transformer.Constants as Constants
 import Utils
@@ -16,6 +18,7 @@ from preprocess.Dataset import get_dataloader, get_dataloader_h5
 from transformer.Models import Transformer
 from tqdm import tqdm
 
+tb_writer = None
 
 def prepare_dataloader(opt):
     """ Load data and prepare dataloader. """
@@ -55,7 +58,7 @@ def prepare_dataloader_h5(opt):
     return trainloader, testloader, num_types
 
 
-def train_epoch(model, training_data, optimizer, pred_loss_func, opt):
+def train_epoch(model, training_data, optimizer, pred_loss_func, opt, epoch_i):
     """ Epoch operation in training phase. """
 
     model.train()
@@ -77,6 +80,11 @@ def train_epoch(model, training_data, optimizer, pred_loss_func, opt):
         optimizer.zero_grad()
 
         enc_out, prediction = model(event_type, event_time)
+
+        # if isinstance(tb_writer, tensorboard.SummaryWriter):
+        #     if epoch_i == 0:
+        #         tb_writer.add_graph(model, (event_time, event_type))
+        #         tb_writer.close()
 
         """ backward """
         # negative log-likelihood
@@ -160,13 +168,15 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
     valid_pred_losses = []  # validation event type prediction accuracy
     valid_rmse = []  # validation event time prediction RMSE
     best_event_ll = -99999
+    summary_dict = {}
     for epoch_i in range(opt.epoch):
         epoch = epoch_i + 1
         print('[ Epoch', epoch, ']')
 
         start = time.time()
         train_event, train_type, train_time, avg_load_time, avg_train_time = train_epoch(model, training_data,
-                                                                                         optimizer, pred_loss_func, opt)
+                                                                                         optimizer, pred_loss_func, opt,
+                                                                                         epoch_i)
         print('  - (Training)    loglikelihood: {ll: 8.5f}, '
               'accuracy: {type: 8.5f}, RMSE: {rmse: 8.5f}, '
               'elapse: {elapse:3.3f} min'
@@ -181,7 +191,7 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
         model_saved = False
         if valid_event > best_event_ll:
             best_event_ll = valid_event
-            torch.save(model, os.path.join(opt.log_path.rstrip("/"), "best_model.pt"))
+            torch.save(model, os.path.join(opt.log_path, "best_model.pt"))
             print("--(Best model saved)---")
             model_saved = True
 
@@ -192,21 +202,34 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
               'Maximum accuracy: {pred: 8.5f}, Minimum RMSE: {rmse: 8.5f}'
               .format(event=max(valid_event_losses), pred=max(valid_pred_losses), rmse=min(valid_rmse)))
 
+        summary_dict = {"avg_batch_load_time": avg_load_time, "avg_batch_train_time": avg_train_time,
+                        "valid_ll": valid_event, "valid_acc_type": valid_type, "valid_rmse_time": valid_time,
+                        "train_ll": train_event, "train_acc_type": train_type, "train_rmse_time": train_time}
+
+        log_time = datetime.now()
+        if isinstance(tb_writer, tensorboard.SummaryWriter):
+            [tb_writer.add_scalar(k, v, epoch_i, log_time.timestamp()) for k, v in summary_dict.items()]
+
         # logging
-        with open(os.path.join(opt.log_path.rstrip("/"), 'log.txt'), 'a') as f:
-            summary_dict = {"epoch": epoch_i, "datetime": datetime.now().isoformat(),
-                            "avg_batch_load_time": avg_load_time, "avg_batch_train_time": avg_train_time,
-                            "model_saved": model_saved,
-                            "valid_ll": valid_event, "valid_acc_type": valid_type, "valid_rmse_time": valid_time,
-                            "train_ll": train_event, "train_acc_type": train_type, "train_rmse_time": train_time}
-            f.write(json.dumps(summary_dict) + '\n')
+        with open(os.path.join(opt.log_path, 'log.txt'), 'a') as f:
+            log_dict = {"epoch": epoch_i, "datetime": log_time.isoformat(), "model_saved": model_saved}
+            log_dict.update(summary_dict)
+            f.write(json.dumps(log_dict) + '\n')
 
         scheduler.step()
-    torch.save(model, f"final_model.pt")
+
+    # if isinstance(tb_writer, tensorboard.SummaryWriter):
+    #     hparams = opt.__dict__
+    #     metrics = {f"hpar_{k}": v for k, v in summary_dict.items()}
+    #     tb_writer.add_hparams(hparams, metrics)
+    #     tb_writer.close()
+
+    torch.save(model, os.path.join(opt.log_path, "final_model.pt"))
 
 
 def main():
     """ Main function. """
+    global tb_writer
 
     parser = argparse.ArgumentParser()
 
@@ -233,11 +256,16 @@ def main():
 
     opt = parser.parse_args()
 
+    current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    opt.log_path = os.path.join(opt.log_path.rstrip("/"), 'runs', current_time + '_' + socket.gethostname())
+
     os.makedirs(opt.log_path, exist_ok=True)
 
     # setup the log file
-    with open(os.path.join(opt.log_path.rstrip("/"), 'log.txt'), 'w') as f:
+    with open(os.path.join(opt.log_path, 'log.txt'), 'w') as f:
         f.write(json.dumps(opt.__dict__) + '\n')
+
+    tb_writer = tensorboard.SummaryWriter(log_dir=opt.log_path)
 
     print('[Info] parameters: {}'.format(opt))
 
