@@ -1,12 +1,14 @@
 batch=12
 log_path_opt=""
+lr=1e-4
 
-while getopts d:l:b: flag
+while getopts d:l:b:r: flag
 do
     case "${flag}" in
         d) data=${OPTARG};;
         l) log_path_opt="-log_path "${OPTARG};;
         b) batch=${OPTARG};;
+        r) lr=${OPTARG};;
     esac
 done
 
@@ -19,7 +21,6 @@ d_inner=1024
 d_k=512
 d_v=512
 dropout=0.1
-lr=1e-4
 smooth=0.1
 epoch=100
 
