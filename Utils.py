@@ -106,8 +106,6 @@ def type_loss(prediction, types, loss_func):
             an end - LabelSmoothingLoss does this already
         LabelSmoothingLoss reduces the contrast of the 1-hot encoded positive and negative values.
     """
-    import pdb
-    pdb.set_trace()
     # convert [1,2,3] based types to [0,1,2]; also convert padding events to -1
     truth = types[:, 1:] - 1
     prediction = prediction[:, :-1, :]
