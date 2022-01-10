@@ -40,15 +40,24 @@ def compute_integral_unbiased(model, data, time, non_pad_mask, type_mask):
 
     num_samples = 100
 
+    # calculate differences between time stamps
     diff_time = (time[:, 1:] - time[:, :-1]) * non_pad_mask[:, 1:]
+    # Add dimension at the end (batch_size, seq_len) and then shorten the time difference by a uniform random
+    # amount (by division) --> gives (batch_size, seq_len, num_samples)
     temp_time = diff_time.unsqueeze(2) * \
                 torch.rand([*diff_time.size(), num_samples], device=data.device)
+    # Now turn 'temp_time' into the MC-randomised "current" factor in Eq6. Why devision by tj + 1 and not tj is
+    # unclear to me...
     temp_time /= (time[:, :-1] + 1).unsqueeze(2)
 
+    # fetch the history + base (Eq6) part starting form the 2nd time slot
     temp_hid = model.linear(data)[:, 1:, :]
+    # keep only the model history and base elements of the intensity for the correct type!
     temp_hid = torch.sum(temp_hid * type_mask[:, 1:, :], dim=2, keepdim=True)
 
+    # now calculate the intensity given the randomly sampled time stamps
     all_lambda = softplus(temp_hid + model.alpha * temp_time, model.beta)
+    # calculate the average intensity across random samples
     all_lambda = torch.sum(all_lambda, dim=2) / num_samples
 
     unbiased_integral = all_lambda * diff_time
@@ -56,20 +65,31 @@ def compute_integral_unbiased(model, data, time, non_pad_mask, type_mask):
 
 
 def log_likelihood(model, data, time, types):
-    """ Log-likelihood of sequence. """
+    """ Log-likelihood of sequence.
+        Caveats and thoughts:
+         - The loss function looks only at the time embeddings calculated for the given types, but ignores the values
+            for all other types!
+         - Unclear why compute_integral_unbiased adds +1 to the times (worried about a 0 timestamp?)
+    """
 
     non_pad_mask = get_non_pad_mask(types).squeeze(2)
 
+    # create a binary tensor indicating the type of events with dimension (batch_size, sequence length, number of types)
     type_mask = torch.zeros([*types.size(), model.num_types], device=data.device)
     for i in range(model.num_types):
         type_mask[:, :, i] = (types == i + 1).bool().to(data.device)
 
+    # the embedding to predictions of event types using a linear layer ("w" in Eq6):
     all_hid = model.linear(data)
+    # calculate softplus likelyhood at tj ´sequence-length´ (ignore interpolations of t in Eq6)
     all_lambda = softplus(all_hid, model.beta)
+    # for every timeslot in the series only keep the lambda of the true type, then aggregate over all types.
     type_lambda = torch.sum(all_lambda * type_mask, dim=2)
 
-    # event log-likelihood
+    # event log-likelihood (1st half of Eq 8)
+    # basically just log(type_lambda) and set unused time slots of the results of the series to 0
     event_ll = compute_event(type_lambda, non_pad_mask)
+    # sum over all events
     event_ll = torch.sum(event_ll, dim=-1)
 
     # non-event log-likelihood, either numerical integration or MC integration
@@ -81,8 +101,13 @@ def log_likelihood(model, data, time, types):
 
 
 def type_loss(prediction, types, loss_func):
-    """ Event prediction loss, cross entropy or label smoothing. """
-
+    """ Event prediction loss, cross entropy or label smoothing.
+        Thoughts: ignore types that happen after the end of the series - it doesn't necessarily make sense to predict
+            an end - LabelSmoothingLoss does this already
+        LabelSmoothingLoss reduces the contrast of the 1-hot encoded positive and negative values.
+    """
+    import pdb
+    pdb.set_trace()
     # convert [1,2,3] based types to [0,1,2]; also convert padding events to -1
     truth = types[:, 1:] - 1
     prediction = prediction[:, :-1, :]
@@ -101,7 +126,10 @@ def type_loss(prediction, types, loss_func):
 
 
 def time_loss(prediction, event_time):
-    """ Time prediction loss. """
+    """ Time prediction loss.
+        Thoughts: ignore types that happen after the end of the series - it doesn't necessarily make sense to predict
+            an end
+    """
 
     prediction.squeeze_(-1)
 

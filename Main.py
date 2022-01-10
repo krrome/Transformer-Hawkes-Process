@@ -20,6 +20,7 @@ from tqdm import tqdm
 
 tb_writer = None
 
+
 def prepare_dataloader(opt):
     """ Load data and prepare dataloader. """
 
