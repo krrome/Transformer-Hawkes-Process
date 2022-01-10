@@ -210,6 +210,13 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
         if isinstance(tb_writer, tensorboard.SummaryWriter):
             [tb_writer.add_scalar(k, v, epoch_i, log_time.timestamp()) for k, v in summary_dict.items()]
 
+            if epoch_i % 2 == 0:
+                for tag, value in model.named_parameters():
+                    grad = value.grad
+                    if grad is not None:
+                        print(tag, grad.shape)
+                        tb_writer.add_histogram(tag + "/grad", grad.cpu(), epoch_i, walltime=log_time.timestamp())
+
         # logging
         with open(os.path.join(opt.log_path, 'log.txt'), 'a') as f:
             log_dict = {"epoch": epoch_i, "datetime": log_time.isoformat(), "model_saved": model_saved}
