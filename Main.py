@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils import tensorboard
 import socket
+import subprocess
 
 import transformer.Constants as Constants
 import Utils
@@ -71,6 +72,7 @@ def train_epoch(model, training_data, optimizer, pred_loss_func, opt, epoch_i):
     total_num_pred = 0  # number of predictions
     load_times = []
     train_times = []
+    losses = {"event_loss": [], "pred_loss": [], "se_loss": []}
     pre_load_time = time.time()
     for batch in tqdm(training_data, mininterval=2, desc='  - (Training)   ', leave=False):
         pre_train_time = time.time()
@@ -89,25 +91,38 @@ def train_epoch(model, training_data, optimizer, pred_loss_func, opt, epoch_i):
 
         """ backward """
         # negative log-likelihood
-        event_ll, non_event_ll = Utils.log_likelihood(model, enc_out, event_time, event_type)
-        event_loss = -torch.sum(event_ll - non_event_ll)
+        if opt.ll_loss_factor > 0:
+            event_ll, non_event_ll = Utils.log_likelihood(model, enc_out, event_time, event_type)
+            event_loss = -torch.sum(event_ll - non_event_ll)
+        else:
+            event_loss = None
 
         # type prediction
         pred_loss, pred_num_event = Utils.type_loss(prediction[0], event_type, pred_loss_func)
 
         # time prediction
-        se = Utils.time_loss(prediction[1], event_time)
+        se = Utils.get_time_loss_fn(opt.time_loss_fn)(prediction[1], event_time, event_type)
 
         # SE is usually large, scale it to stabilize training
-        scale_time_loss = 100
-        loss = event_loss + pred_loss + se / scale_time_loss
+        scale_time_loss = opt.time_loss_scaler
+        if opt.ll_loss_factor > 0:
+            loss = event_loss * opt.ll_loss_factor + pred_loss + se / scale_time_loss
+        else:
+            loss = pred_loss + se / scale_time_loss
+        if isinstance(tb_writer, tensorboard.SummaryWriter):
+            if event_loss is not None:
+                losses["event_loss"].append(event_loss.cpu().item())
+            losses["pred_loss"].append(pred_loss.cpu().item())
+            losses["se_loss"].append(se.cpu().item() / scale_time_loss)
+
         loss.backward()
 
         """ update parameters """
         optimizer.step()
 
         """ note keeping """
-        total_event_ll += -event_loss.item()
+        if event_loss is not None:
+            total_event_ll += -event_loss.item()
         total_time_se += se.item()
         total_event_rate += pred_num_event.item()
         total_num_event += event_type.ne(Constants.PAD).sum().item()
@@ -123,7 +138,8 @@ def train_epoch(model, training_data, optimizer, pred_loss_func, opt, epoch_i):
     print(f"Avg load time: {avg_load_time}, avg train time: {avg_train_time}")
 
     rmse = np.sqrt(total_time_se / total_num_pred)
-    return total_event_ll / total_num_event, total_event_rate / total_num_pred, rmse, avg_load_time, avg_train_time
+    return total_event_ll / total_num_event, total_event_rate / total_num_pred, rmse, avg_load_time, \
+           avg_train_time, losses
 
 
 def eval_epoch(model, validation_data, pred_loss_func, opt):
@@ -149,7 +165,7 @@ def eval_epoch(model, validation_data, pred_loss_func, opt):
             event_ll, non_event_ll = Utils.log_likelihood(model, enc_out, event_time, event_type)
             event_loss = -torch.sum(event_ll - non_event_ll)
             _, pred_num = Utils.type_loss(prediction[0], event_type, pred_loss_func)
-            se = Utils.time_loss(prediction[1], event_time)
+            se = Utils.get_time_loss_fn(opt.time_loss_fn)(prediction[1], event_time, event_type)
 
             """ note keeping """
             total_event_ll += -event_loss.item()
@@ -169,13 +185,12 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
     valid_pred_losses = []  # validation event type prediction accuracy
     valid_rmse = []  # validation event time prediction RMSE
     best_event_ll = -99999
-    summary_dict = {}
     for epoch_i in range(opt.epoch):
         epoch = epoch_i + 1
         print('[ Epoch', epoch, ']')
 
         start = time.time()
-        train_event, train_type, train_time, avg_load_time, avg_train_time = train_epoch(model, training_data,
+        train_event, train_type, train_time, avg_load_time, avg_train_time, losses = train_epoch(model, training_data,
                                                                                          optimizer, pred_loss_func, opt,
                                                                                          epoch_i)
         print('  - (Training)    loglikelihood: {ll: 8.5f}, '
@@ -210,12 +225,12 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
         log_time = datetime.now()
         if isinstance(tb_writer, tensorboard.SummaryWriter):
             [tb_writer.add_scalar(k, v, epoch_i, log_time.timestamp()) for k, v in summary_dict.items()]
+            [tb_writer.add_histogram(k, np.array(v), epoch_i, walltime=log_time.timestamp()) for k, v in losses.items()]
 
             if epoch_i % 2 == 0:
                 for tag, value in model.named_parameters():
                     grad = value.grad
                     if grad is not None:
-                        print(tag, grad.shape)
                         tb_writer.add_histogram(tag + "/grad", grad.cpu(), epoch_i, walltime=log_time.timestamp())
 
         # logging
@@ -260,6 +275,11 @@ def main():
     parser.add_argument('-smooth', type=float, default=0.1)
     parser.add_argument('-device', type=str, default='cuda')
 
+    parser.add_argument('-ll_loss_factor', type=float, default=1, help="ll loss is multiplied by this")
+    parser.add_argument('-time_loss_scaler', type=float, default=100, help="time loss is divided by this")
+    parser.add_argument('-time_loss_fn', type=str, default="include_padding", choices=["include_padding",
+                                                                                       "exclude_padding"])
+
     parser.add_argument('-log_path', type=str, default=os.getcwd())
 
     opt = parser.parse_args()
@@ -271,7 +291,11 @@ def main():
 
     # setup the log file
     with open(os.path.join(opt.log_path, 'log.txt'), 'w') as f:
-        f.write(json.dumps(opt.__dict__) + '\n')
+        git_hash = subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
+        config = {"git_hash": git_hash}
+        config.update(opt.__dict__)
+        f.write(json.dumps(config) + '\n')
+
 
     tb_writer = tensorboard.SummaryWriter(log_dir=opt.log_path)
 

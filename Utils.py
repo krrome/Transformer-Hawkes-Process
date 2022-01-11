@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from transformer.Models import get_non_pad_mask
+from transformer.Constants import PAD
 
 
 def softplus(x, beta):
@@ -123,7 +124,7 @@ def type_loss(prediction, types, loss_func):
     return loss, correct_num
 
 
-def time_loss(prediction, event_time):
+def time_loss(prediction, event_time, event_type):
     """ Time prediction loss.
         Thoughts: ignore types that happen after the end of the series - it doesn't necessarily make sense to predict
             an end
@@ -138,6 +139,28 @@ def time_loss(prediction, event_time):
     diff = prediction - true
     se = torch.sum(diff * diff)
     return se
+
+
+def time_loss_no_padding(prediction, event_time, event_type):
+    """ Time prediction loss.
+        Thoughts: ignore types that happen after the end of the series - it doesn't necessarily make sense to predict
+            an end
+    """
+
+    non_pad_mask = event_type.ne(PAD).float()
+    prediction.squeeze_(-1)
+
+    true = event_time[:, 1:] - event_time[:, :-1]
+    prediction = prediction[:, :-1]
+
+    # event time gap prediction
+    diff = (prediction - true) * non_pad_mask[:, 1:]
+    se = torch.sum(diff * diff)
+    return se
+
+
+def get_time_loss_fn(kind):
+    return {"include_padding": time_loss, "exclude_padding": time_loss_no_padding}[kind]
 
 
 class LabelSmoothingLoss(nn.Module):
