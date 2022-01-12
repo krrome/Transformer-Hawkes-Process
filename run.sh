@@ -5,13 +5,14 @@ time_loss_fn="exclude_padding"
 time_loss_scaler=100
 ll_loss_factor=1
 
-while getopts d:l:b:r: flag
+while getopts d:l:b:r:f: flag
 do
     case "${flag}" in
         d) data=${OPTARG};;
         l) log_path_opt="-log_path "${OPTARG};;
         b) batch=${OPTARG};;
         r) lr=${OPTARG};;
+        f) ll_loss_factor=${OPTARG};;
     esac
 done
 
