@@ -225,7 +225,7 @@ def train(model, training_data, validation_data, optimizer, scheduler, pred_loss
         log_time = datetime.now()
         if isinstance(tb_writer, tensorboard.SummaryWriter):
             [tb_writer.add_scalar(k, v, epoch_i, log_time.timestamp()) for k, v in summary_dict.items()]
-            [tb_writer.add_histogram(k, np.array(v), epoch_i, walltime=log_time.timestamp()) for k, v in losses.items()]
+            [tb_writer.add_histogram(k, np.array(v), epoch_i, walltime=log_time.timestamp()) for k, v in losses.items() if v]
 
             if epoch_i % 2 == 0:
                 for tag, value in model.named_parameters():
